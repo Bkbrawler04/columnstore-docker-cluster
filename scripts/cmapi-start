@@ -1,0 +1,44 @@
+#!/bin/bash
+
+# Set Variables
+IFLAG=/etc/columnstore/container-initialized
+LOG_PREFIX=/var/log/mariadb/columnstore
+MCS_INSTALL_BIN=/usr/bin
+API_KEY="${API_KEY:-somekey123}"
+TOTALUMMEMORY="${TOTALUMMEMORY:-25%}"
+NUMBLOCKSPCT="${NUMBLOCKPCT:-50}"
+
+# Intialize Container If Necessary
+if [ ! -e $IFLAG ]; then
+    $MCS_INSTALL_BIN/columnstore-init &> $LOG_PREFIX/columnstore-init.log
+        if [ $? -ne 0 ]; then
+            echo "ERROR: During Initialization."
+            exit 1
+        fi
+fi
+
+# Dynamic Memory Allocation
+if [ -f /sys/fs/cgroup/memory/memory.limit_in_bytes ] && [ "$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)" -le "$(free -b | awk 'NR==2{printf "%d", $2 }')" ]; then
+    # If limited by cgroups (e.g. in SkySQL)
+    MAX_RAM_BYTES=$(cat /sys/fs/cgroup/memory/memory.limit_in_bytes)
+    MAX_RAM=$((MAX_RAM_BYTES/1024/1024))
+    TOTALUMMEMORY=$( echo $MAX_RAM / 4  | bc )M
+    NUMBLOCKSPCT=$( echo $MAX_RAM / 2  | bc )M
+fi
+
+# Performance Tuning
+$MCS_INSTALL_BIN/mcsSetConfig HashJoin TotalUmMemory "$TOTALUMMEMORY"
+$MCS_INSTALL_BIN/mcsSetConfig DBBC NumBlocksPct "$NUMBLOCKSPCT"
+
+# Start cmapi
+echo Starting...
+
+touch $LOG_PREFIX/cmapi_server.log && chmod 666 $LOG_PREFIX/cmapi_server.log
+cd /opt/cmapi || exit
+PYTHONPATH=/opt/cmapi/deps /opt/cmapi/python/bin/python3 -m cmapi_server &> $LOG_PREFIX/cmapi_server.log &
+echo CMAPI PID = $!
+
+# Start MariaDB
+/usr/share/mysql/mysql.server start
+
+exit 0
